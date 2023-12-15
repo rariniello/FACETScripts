@@ -2,26 +2,18 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 import h5py
-import base64
-import ast
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.colors as colors
+import matplotlib.transforms as mtransforms
 from scipy.optimize import curve_fit
 import scipy.io
-import libtiff
-import glob
 import os
-import re
 import load
 
 
-cal = {
-    #    '17583372': 0.02769, # Rail cam, M=0.1 camera
-    #    '17571186': 0.00220, # Rail cam, direct, pixel size
-    #    '18085415': 0.03062, # NF
-    #    '18085362': 0.0003495  # FF, pixel size
-}
+cal = {}
 
 
 def set_calibration(cam_name: str, calibration: float):
@@ -32,44 +24,6 @@ def set_calibration(cam_name: str, calibration: float):
         calibration: Pixel calibration in mm/px.
     """
     cal[str(cam_name)] = calibration
-
-
-def get_date_from_dataset(dataset):
-    """Get the year, month, and day from a dataset number.
-
-    Parameters
-    ----------
-    dataset : int, string
-        Dataset number.
-
-    Returns
-    -------
-    year : string
-        4 character year for the dataset.
-    month : string
-        2 character month for the dataset.
-    day : string
-        2 character day for the dataset.
-    """
-    dataset = str(dataset)
-    year = "20{:2s}".format(dataset[0:2])
-    month = "{:2s}".format(dataset[2:4])
-    day = "{:2s}".format(dataset[4:6])
-    return year, month, day
-
-
-def make_dir(path):
-    if not os.path.exists(path):
-        os.makedirs(path)
-
-
-def parse_line(line, rexp):
-    """Regex search against the defined lines, return the first match."""
-    for key, rex in rexp.items():
-        match = rex.search(line)
-        if match:
-            return key, match
-    return None, None
 
 
 class IMAGE:
@@ -144,13 +98,11 @@ class IMAGE:
 
     # Modification functions --------------------------------------------------
     # --------------------------------------------------------------------------
-    def rotate(self, angle):
+    def rotate(self, angle: float):
         """Rotate the image.
 
-        Parameters
-        ----------
-        angle : float
-            Angle to rotate the image by, in deg.
+        Args:
+            angle: Angle to rotate the image by, in deg.
         """
         self.image = self.image.rotate(angle)
         self.data = np.array(self.image, dtype="float")
@@ -171,15 +123,12 @@ class IMAGE:
         self.y = self.cal * self.yp
         self.center = None
 
-    def center_image(self, strategy, o, **kwargs):
+    def center_image(self, strategy: str, o: int, **kwargs):
         """Center the image by non-uniformaly padding it. Meta will no longer match class parameters.
 
-        Parameters
-        ----------
-        strategy : string
-            See calculate_center for available strategies and **kwargs.
-        o : int
-            Padding on each side of returned array, in px.
+        Args:
+            strategy: See calculate_center for available strategies and **kwargs.
+            o: Padding on each side of returned array, in px.
         """
         cen_image, center = self.get_center_image(strategy, o, **kwargs)
         self.data = cen_image
@@ -208,28 +157,28 @@ class IMAGE:
     # Calculation functions ---------------------------------------------------
     # --------------------------------------------------------------------------
     def calculate_center(
-        self, strategy="cm", threshold=12, f=None, p0=None, center=None
+        self,
+        strategy: str = "cm",
+        threshold: int = 12,
+        f=None,
+        p0: tuple = None,
+        center: np.ndarray = None,
     ):
         """Calculate the pixel location of the center of the image.
 
-        Parameters
-        ----------
-        strategy : string
-            'cm' - the image center is found by taking the cm of the image.
-            'mask' - a mask is formed from all pixels with values greather than a threshold.
-                The image center is the centroid of the mask.
-            'fit' - fit a function to the image to find the center.
-            'external' - pass in the location of the mask center.
-        threshold : int
-            When strategy='mask', threshold is used to create the mask.
-        f : function
-            When strategy='f', function to fit to the data. The first two free parameters
-            should be the x and y positions of the center. It should accept as the first
-            arguments (x, y).
-        p0 : array
-            When strategy='f', initial guesses for model parameters.
-        center : (2) array
-            When strategy='external', location of the image center.
+        Args:
+            strategy: Select the technique to use to find the center of the image.
+                'cm' - the image center is found by taking the cm of the image.
+                'mask' - a mask is formed from all pixels with values greather than a threshold.
+                    The image center is the centroid of the mask.
+                'fit' - fit a function to the image to find the center.
+                'external' - pass in the location of the mask center.
+            threshold: When strategy='mask', threshold is used to create the mask.
+            f: When strategy='f', function to fit to the data. The first two free parameters
+                should be the x and y positions of the center. It should accept as the first
+                arguments (x, y).
+            p0: When strategy='f', initial guesses for model parameters.
+            center: When strategy='external', location of the image center.
         """
         if strategy == "cm":
             self.center = self.center_cm()
@@ -333,7 +282,7 @@ class IMAGE:
         ax.set_ylim(ext[2], ext[3])
         return fig, ax, ext
 
-    def plot_image(self, cal=True, cmap="inferno"):
+    def plot_image(self, cal=True, cmap="inferno", metadata=True):
         """Convenient plotting code to quickly look at images with meta data.
 
         Parameters
@@ -355,8 +304,9 @@ class IMAGE:
             Extent of the image for imshow.
         """
         fig, ax, ext = self.create_fig_ax(cal)
-        self.plot_dataset_text(ax)
-        self.plot_metadata_text(ax)
+        if metadata:
+            self.plot_dataset_text(ax)
+            self.plot_metadata_text(ax)
         im = ax.imshow(self.data, extent=ext, cmap=cmap)
         cb = fig.colorbar(im, aspect=30 * self.height / self.width)
         cb.set_label("Counts")
@@ -369,8 +319,6 @@ class IMAGE:
 
     def plot_dataset_text(self, ax):
         """Add text at the top of the figure stating the dataset and shot number."""
-        # ax.text(0.02, 0.95, r"DS: {!s}".format(self.dataset), color='w', transform=ax.transAxes)
-        # ax.text(0.77, 0.95, r"Shot: {:04d}".format(self.shot), color='w', transform=ax.transAxes)
         pass
 
     def plot_metadata_text(self, ax):
@@ -505,10 +453,14 @@ class Elog(IMAGE):
 
 
 class DAQ(IMAGE):
-    def __init__(self, camera, dataset, filename):
+    def __init__(self, camera, dataset, filename, ind, step):
         self.dataset = dataset
         self.filename = filename
+        self.ind = ind
+        self.step = step
         super().__init__(camera)
+        if self.meta["Y_ORIENT"] == "Negative" and self.meta["X_ORIENT"] == "Negative":
+            self.rotate(180)
 
     def load_image(self):
         """Load an image from a given data set.
@@ -524,4 +476,70 @@ class DAQ(IMAGE):
         return image
 
     def get_image_meta(self):
-        return {}
+        return self.dataset.metadata[self.camera]
+
+    def plot_dataset_text(self, ax):
+        """Add text at the top of the figure stating the dataset and shot number."""
+        ax.text(
+            0.02,
+            0.95,
+            "{}, Dataset: {}".format(self.dataset.experiment, self.dataset.number),
+            color="w",
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.82,
+            0.95,
+            "Shot: {:04d}".format(self.ind),
+            color="w",
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.82,
+            0.9,
+            "Step: {:02d}".format(self.step),
+            color="w",
+            transform=ax.transAxes,
+        )
+
+    def plot_metadata_text(self, ax):
+        """Add text at the bottom of the figure stating image parameters."""
+        s = mpl.rcParams["xtick.labelsize"]
+        dy = 0.04
+        y = 0.02
+        sx = self.meta["MinX_RBV"]
+        sy = self.meta["MinY_RBV"]
+        exp = self.meta["AcquireTime_RBV"]
+        gain = self.meta["Gain_RBV"]
+        ax.text(
+            0.02,
+            y + dy,
+            "Size:  {:4d}, {:04d}".format(self.width, self.height),
+            color="w",
+            size=s,
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.02,
+            y,
+            "Start: {:4d}, {:4d}".format(sx, sy),
+            color="w",
+            size=s,
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.84,
+            y + dy,
+            "Exp:  {:0.2f}ms".format(exp * 1e3),
+            color="w",
+            size=s,
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.84,
+            y,
+            "Gain: {:0.2f}".format(gain),
+            color="w",
+            size=s,
+            transform=ax.transAxes,
+        )

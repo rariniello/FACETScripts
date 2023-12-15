@@ -70,7 +70,15 @@ class DATASET:
         common_index = self.pulseID[camera + "common_index"][ind]
         image_path = self.images[camera]["loc"][common_index - 1]
         filename = os.path.basename(image_path)
-        return image.DAQ(camera, self, filename)
+        step = self.common_stepIndex[ind]
+        ind = int(image_path[-8:-4])
+        return image.DAQ(camera, self, filename, ind, step)
+
+    def getImage_NoMatch(self, camera, ind):
+        image_path = self.images[camera]["loc"][ind]
+        filename = os.path.basename(image_path)
+        step = self.images[camera]["step"][ind]
+        return image.DAQ(camera, self, filename, ind, step)
 
     def getImageBackground(self, camera):
         bkgd = self._data["backgrounds"][camera]
