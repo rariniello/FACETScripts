@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.colors as colors
 from scipy.optimize import curve_fit
-import libtiff
+
+# import libtiff
 import glob
 import os
 import re

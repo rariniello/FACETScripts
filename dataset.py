@@ -4,6 +4,7 @@ import math
 import numpy as np
 import scipy
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 import load
 import image
@@ -81,11 +82,18 @@ class DATASET:
         return image.DAQ(camera, self, filename, ind, step)
 
     def getImageBackground(self, camera):
+        XOrient = self.metadata[camera]["X_ORIENT"]
+        YOrient = self.metadata[camera]["Y_ORIENT"]
         bkgd = self._data["backgrounds"][camera]
         if bkgd.ndim == 3:
-            return np.transpose(np.average(bkgd, axis=2))
+            bkgd = np.average(bkgd, axis=2)
+            bkgd = image.orientImage(np.transpose(bkgd), XOrient, YOrient)
+            bkgd = image.specialFlips(camera, bkgd)
+            return bkgd
         elif bkgd.ndim == 2:
-            return np.transpose(bkgd)
+            bkgd = image.orientImage(np.transpose(bkgd), XOrient, YOrient)
+            bkgd = image.specialFlips(camera, bkgd)
+            return bkgd
 
     def scalarLists(self) -> list:
         scalarLists = []
@@ -244,3 +252,30 @@ class DATASET:
         )
         ax.legend()
         return fig, ax
+
+    def cameraGif(self, cam, name, M=1, cal=True, offset=0, clim=None):
+        """Makes a gif showing all of the shots from a given camera"""
+        # TODO add a keyword argument to turn background subtraction on/off
+        N = len(self.common_index)
+        im = self.getImage(cam, 0 + offset)
+        bkgd = self.getImageBackground(cam)
+        im.subtract_background(bkgd)
+        fig, ax, im, cb, ext = im.plot_image(cal=cal)
+        if clim is not None:
+            im.set_clim(clim)
+        plt.tight_layout()
+
+        def animate(i):
+            img = self.getImage(cam, i * M + offset)
+            img.subtract_background(bkgd)
+            data = img.data
+            im.set_data(data)
+            ax.stepText.set_text("Shot: {:04d}\nStep: {:02d}".format(img.ind, img.step))
+            return im
+
+        ani = animation.FuncAnimation(
+            fig, animate, repeat=True, frames=int(N / M), interval=50
+        )
+        writer = animation.PillowWriter(fps=15, bitrate=1800)
+        ani.save(name, writer=writer)
+        print("Finished creating GIF")

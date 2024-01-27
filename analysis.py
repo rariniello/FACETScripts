@@ -164,3 +164,19 @@ def fit_2D_superGaussian(image, p0=(60, 35, 2200, 15, 4)):
     ydata = Z.ravel()
     popt, pcov = optimize.curve_fit(f2sg, xdata, ydata, p0=p0)
     return f2sg, popt
+
+
+def find_roots(x, y):
+    inds = np.where(np.sign(y[:-1]) != np.sign(y[1:]))[0] + 1
+    N = len(inds)
+    if N == 0:
+        raise RuntimeError("No roots found.")
+    roots = np.zeros(N)
+    for i in range(N):
+        ind = inds[i]
+        x1 = x[ind - 1]
+        x2 = x[ind]
+        y1 = y[ind - 1]
+        y2 = y[ind]
+        roots[i] = -y1 * ((x2 - x1) / (y2 - y1)) + x1
+    return roots

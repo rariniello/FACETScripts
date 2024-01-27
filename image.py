@@ -26,13 +26,40 @@ def set_calibration(cam_name: str, calibration: float):
     cal[str(cam_name)] = calibration
 
 
+def orientImage(data, XOrient, YOrient):
+    if XOrient == "Positive" and YOrient == "Positive":
+        return data
+    elif XOrient == "Negative" and YOrient == "Negative":
+        return np.rot90(data, k=2)
+    elif XOrient == "Negative" and YOrient == "Positive":
+        return np.flip(data, axis=1)
+    elif XOrient == "Positive" and YOrient == "Negative":
+        return np.flip(data, axis=0)
+    else:
+        raise RuntimeError("Image orientations does not match expected values")
+
+
+def specialFlips(camera, data):
+    # I hate everything about this...
+    if (
+        camera == "LFOV"
+        or camera == "GAMMA1"
+        or camera == "CHER"
+        or camera == "EDC_SCREEN"
+    ):
+        # Rotate clockwise
+        # data = np.rot90(data, k=1, axes=(1, 0))
+        data = np.transpose(data)
+    return data
+
+
 class IMAGE:
     # Initialization functions ------------------------------------------------
     # --------------------------------------------------------------------------
     def __init__(self, camera, **kwargs):
         self.camera = str(camera)
-        self.image = self.load_image()
         self.meta = self.get_image_meta()
+        self.image = self.load_image()
         self.data = np.array(self.image, dtype="float")
         if self.camera not in cal:
             set_calibration(self.camera, 1)
@@ -154,11 +181,16 @@ class IMAGE:
         self.data = data - background
         self.image = Image.fromarray(self.data)
 
+    def median_filter(self, size=3):
+        self.data = ndimage.median_filter(self.data, size)
+        self.image = Image.fromarray(self.data)
+
     # Calculation functions ---------------------------------------------------
     # --------------------------------------------------------------------------
     def calculate_center(
         self,
         strategy: str = "cm",
+        size: int = 3,
         threshold: int = 12,
         f=None,
         p0: tuple = None,
@@ -169,10 +201,12 @@ class IMAGE:
         Args:
             strategy: Select the technique to use to find the center of the image.
                 'cm' - the image center is found by taking the cm of the image.
+                'max' - the image center is found by median filtering then taking the max.
                 'mask' - a mask is formed from all pixels with values greather than a threshold.
                     The image center is the centroid of the mask.
                 'fit' - fit a function to the image to find the center.
                 'external' - pass in the location of the mask center.
+            size: When strategy='max', size of the median filter
             threshold: When strategy='mask', threshold is used to create the mask.
             f: When strategy='f', function to fit to the data. The first two free parameters
                 should be the x and y positions of the center. It should accept as the first
@@ -182,6 +216,8 @@ class IMAGE:
         """
         if strategy == "cm":
             self.center = self.center_cm()
+        if strategy == "max":
+            self.center = self.center_max(size)
         if strategy == "mask":
             self.center = self.center_mask(threshold)
         if strategy == "fit":
@@ -194,6 +230,13 @@ class IMAGE:
     def center_cm(self):
         """Calculate the center of mass of the image."""
         return np.flip(ndimage.center_of_mass(self.data))
+
+    def center_max(self, size):
+        data = ndimage.median_filter(self.data, size)
+        center = np.argmax(data)
+        center_y = center / self.width
+        center_x = center % self.width
+        return np.array([center_x, center_y])
 
     def center_mask(self, threshold):
         """Calculate the centroid of a mask of the image."""
@@ -323,12 +366,6 @@ class IMAGE:
 
     def plot_metadata_text(self, ax):
         """Add text at the bottom of the figure stating image parameters."""
-        dy = 0.05
-        y = 0.02
-        # ax.text(0.02, y+dy, r"Size:  {:4d}, {:04d}".format(self.width, self.height), color='w', transform=ax.transAxes)
-        # ax.text(0.02, y, r"Start: {:4d}, {:4d}".format(self.offset[0], self.offset[1]), color='w', transform=ax.transAxes)
-        # ax.text(0.66, y+dy, r"Exp:  {:0.2f}ms".format(self.shutter), color='w', transform=ax.transAxes)
-        # ax.text(0.66, y, r"Gain: {:0.2f}".format(self.gain), color='w', transform=ax.transAxes)
         pass
 
     def plot_center(self, radius, cal=True, cmap="inferno"):
@@ -357,13 +394,14 @@ class IMAGE:
         ax.plot(
             radius * np.cos(phi) + cal * cen[0], radius * np.sin(phi) + cal * cen[1]
         )
-        ax.text(0.02, 0.9, "Beam center:", color="tab:blue", transform=ax.transAxes)
-        ax.text(
-            0.02,
-            0.85,
-            "({:0.3f}, {:0.3f})".format(cal * cen[0], cal * cen[1]),
+        ax.annotate(
+            "Beam center:\n({:0.3f}, {:0.3f})".format(cal * cen[0], cal * cen[1]),
+            xy=(0, 1),
+            xytext=(3, -19),
+            xycoords="axes fraction",
+            textcoords="offset points",
             color="tab:blue",
-            transform=ax.transAxes,
+            va="top",
         )
         return fig, ax, im, cb, ext
 
@@ -459,8 +497,6 @@ class DAQ(IMAGE):
         self.ind = ind
         self.step = step
         super().__init__(camera)
-        if self.meta["Y_ORIENT"] == "Negative" and self.meta["X_ORIENT"] == "Negative":
-            self.rotate(180)
 
     def load_image(self):
         """Load an image from a given data set.
@@ -473,73 +509,78 @@ class DAQ(IMAGE):
         self.path = os.path.join(self.dataset.datasetPath, "images", self.camera)
         name = os.path.join(self.path, self.filename)
         image = Image.open(name)
+        data = np.array(image, dtype="float")
+        image = self.orientImage(data)
         return image
 
     def get_image_meta(self):
         return self.dataset.metadata[self.camera]
 
+    def orientImage(self, data):
+        XOrient = self.meta["X_ORIENT"]
+        YOrient = self.meta["Y_ORIENT"]
+        data = orientImage(data, XOrient, YOrient)
+        data = specialFlips(self.camera, data)
+        return Image.fromarray(data)
+
     def plot_dataset_text(self, ax):
         """Add text at the top of the figure stating the dataset and shot number."""
-        ax.text(
-            0.02,
-            0.95,
-            "{}, Dataset: {}".format(self.dataset.experiment, self.dataset.number),
+        datasetText = ax.annotate(
+            "{}, Dataset: {}\n{}".format(
+                self.dataset.experiment, self.dataset.number, self.camera
+            ),
+            xy=(0, 1),
+            xytext=(3, -3),
+            xycoords="axes fraction",
+            textcoords="offset points",
             color="w",
-            transform=ax.transAxes,
+            va="top",
         )
-        ax.text(
-            0.82,
-            0.95,
-            "Shot: {:04d}".format(self.ind),
+        stepText = ax.annotate(
+            "Shot: {:04d}\nStep: {:02d}".format(self.ind, self.step),
+            xy=(1, 1),
+            xytext=(-38, -3),
+            xycoords="axes fraction",
+            textcoords="offset points",
             color="w",
-            transform=ax.transAxes,
+            va="top",
         )
-        ax.text(
-            0.82,
-            0.9,
-            "Step: {:02d}".format(self.step),
-            color="w",
-            transform=ax.transAxes,
-        )
+        ax.stepText = stepText
+        ax.datasetText = datasetText
 
     def plot_metadata_text(self, ax):
         """Add text at the bottom of the figure stating image parameters."""
         s = mpl.rcParams["xtick.labelsize"]
-        dy = 0.04
-        y = 0.02
         sx = self.meta["MinX_RBV"]
         sy = self.meta["MinY_RBV"]
         exp = self.meta["AcquireTime_RBV"]
         gain = self.meta["Gain_RBV"]
-        ax.text(
-            0.02,
-            y + dy,
-            "Size:  {:4d}, {:04d}".format(self.width, self.height),
+        metadataText = ax.annotate(
+            "Size:  {:4d}, {:4d}\nStart: {:4d}, {:4d}".format(
+                self.width, self.height, sx, sy
+            ),
+            xy=(0, 0),
+            xytext=(3, 3),
+            xycoords="axes fraction",
+            textcoords="offset points",
             color="w",
             size=s,
             transform=ax.transAxes,
         )
-        ax.text(
-            0.02,
-            y,
-            "Start: {:4d}, {:4d}".format(sx, sy),
-            color="w",
-            size=s,
-            transform=ax.transAxes,
-        )
-        ax.text(
-            0.84,
-            y + dy,
-            "Exp:  {:0.2f}ms".format(exp * 1e3),
-            color="w",
-            size=s,
-            transform=ax.transAxes,
-        )
-        ax.text(
-            0.84,
-            y,
-            "Gain: {:0.2f}".format(gain),
-            color="w",
-            size=s,
-            transform=ax.transAxes,
-        )
+        ax.metadataText = metadataText
+        # ax.text(
+        #     0.84,
+        #     y + dy,
+        #     "Exp:  {:0.2f}ms".format(exp * 1e3),
+        #     color="w",
+        #     size=s,
+        #     transform=ax.transAxes,
+        # )
+        # ax.text(
+        #     0.84,
+        #     y,
+        #     "Gain: {:0.2f}".format(gain),
+        #     color="w",
+        #     size=s,
+        #     transform=ax.transAxes,
+        # )
