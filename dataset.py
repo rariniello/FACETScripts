@@ -5,6 +5,7 @@ import numpy as np
 import scipy
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import matplotlib.gridspec as gridspec
 
 import load
 import image
@@ -37,6 +38,10 @@ class DATASET:
             self.cameras = [self.cameras]
         self.scan_vals = self.params["scanVals"]
         self.Nsteps = len(self.scan_vals)
+        self.HDF5 = False
+        if "saveMethod" in self.params:
+            if self.params["saveMethod"] == "HDF5":
+                self.HDF5 = True
         # Metadata for each camera and all the PVs in scalar lists
         self.metadata = self._data["metadata"]
         self.loadCameraCalibration()
@@ -55,25 +60,55 @@ class DATASET:
             self.x = None
         else:
             self.x = self.scan_vals[self.common_stepIndex - 1]
+        # All the steps that have matches
+        steps = self.common_stepIndex
+        unique_steps = np.unique(steps)
+        if self.Nsteps > 0:
+            self.x_steps = self.scan_vals[unique_steps - 1]
+        else:
+            self.x_steps = None
 
     def loadCameraCalibration(self):
         for cam in self.cameras:
-            cal = self.metadata[cam]["RESOLUTION"]
+            bin = self.metadata[cam]["BinX_RBV"]
+            cal = self.metadata[cam]["RESOLUTION"] * bin
+            if np.isnan(cal):
+                return
             image.set_calibration(cam, cal * 1e-3)
 
     # Data retrieval functions -------------------------------------------------
     # --------------------------------------------------------------------------
     def getScalar(self, list: str, PV: str) -> np.ndarray:
         PV = PV.replace(":", "_")
-        return self._data["scalars"][list][PV][self.common_index]
+        PV = PV.replace(".", "_")
+        try:
+            return self._data["scalars"][list][PV][self.common_index - 1]
+        except IndexError:
+            # The scalar array probably has too few shots
+            a = np.empty(self.N)
+            a[:] = np.nan
+            data = self._data["scalars"][list][PV]
+            sel = (self.common_index - 1) < len(data)
+            a[sel] = data[self.common_index[sel] - 1]
+            return a
+
+    def getRawScalar(self, list: str, PV: str) -> np.ndarray:
+        PV = PV.replace(":", "_")
+        return self._data["scalars"][list][PV]
 
     def getImage(self, camera, ind):
-        common_index = self.pulseID[camera + "common_index"][ind]
-        image_path = self.images[camera]["loc"][common_index - 1]
-        filename = os.path.basename(image_path)
         step = self.common_stepIndex[ind]
-        ind = int(image_path[-8:-4])
-        return image.DAQ(camera, self, filename, ind, step)
+        common_index = self.pulseID[camera + "common_index"][ind]
+        if self.HDF5:
+            image_path = self.images[camera]["loc"]
+            filename = os.path.basename(image_path)
+            ind = common_index - 1 - (step - 1) * self.params["n_shot"]
+            return image.HDF5_DAQ(camera, self, filename, ind, step)
+        else:
+            image_path = self.images[camera]["loc"][common_index - 1]
+            filename = os.path.basename(image_path)
+            ind = int(image_path[-8:-4])
+            return image.DAQ(camera, self, filename, ind, step)
 
     def getImage_NoMatch(self, camera, ind):
         image_path = self.images[camera]["loc"][ind]
@@ -84,15 +119,19 @@ class DATASET:
     def getImageBackground(self, camera):
         XOrient = self.metadata[camera]["X_ORIENT"]
         YOrient = self.metadata[camera]["Y_ORIENT"]
+        if "IS_ROTATED" in self.metadata[camera]:
+            isRotated = self.metadata[camera]["IS_ROTATED"]
+        else:
+            isRotated = None
         bkgd = self._data["backgrounds"][camera]
         if bkgd.ndim == 3:
             bkgd = np.average(bkgd, axis=2)
-            bkgd = image.orientImage(np.transpose(bkgd), XOrient, YOrient)
-            bkgd = image.specialFlips(camera, bkgd)
+            bkgd = image.orientImage(np.transpose(bkgd), XOrient, YOrient, isRotated)
+            bkgd = image.specialFlips(camera, bkgd, isRotated)
             return bkgd
         elif bkgd.ndim == 2:
-            bkgd = image.orientImage(np.transpose(bkgd), XOrient, YOrient)
-            bkgd = image.specialFlips(camera, bkgd)
+            bkgd = image.orientImage(np.transpose(bkgd), XOrient, YOrient, isRotated)
+            bkgd = image.specialFlips(camera, bkgd, isRotated)
             return bkgd
 
     def scalarLists(self) -> list:
@@ -112,7 +151,8 @@ class DATASET:
     def getListForPV(self, PV):
         lists = self.scalarLists()
         for l in lists:
-            if PV in l:
+            pvs = self.PVsInList(l)
+            if PV in pvs:
                 return l
         return None
 
@@ -128,7 +168,27 @@ class DATASET:
 
     # Analysis functions -------------------------------------------------------
     # --------------------------------------------------------------------------
-    def averageByStep(self, data, outlierRejection=False):
+    def averageByStep(
+        self, data, outlierRejection=False, returnOutliers=False, sel=None
+    ):
+        """Divides the given scalar values into scan steps and averages within each step.
+
+        Values beyond 1.5 times the interquartile range can be rejected by setting rejectOutlier
+        to True. Similarly, only certain data can be included by passing a boolean array of length
+        self.N to use as a selector on the data (False will be ignored)
+
+        Args:
+            data: Scalar values for each common index, must have length self.N.
+            outlierRejection: Whether to reject outliers from the average and standard deviation.
+            returnOutliers: Whether to return the indices of the outlier data or not.
+            sel: Optional selector array used to select which data to keep.
+
+        Returns:
+            averages: Average value of the data within each step.
+            std: Standard deviation of the data within each step.
+            stdMeans: Standard deviation of the mean of the dat within each step.
+            outliers: Only returned in returnOutlier=True, indexes of outliers that were rejected.
+        """
         steps = self.common_stepIndex
         unique_steps = np.unique(steps)
 
@@ -138,10 +198,15 @@ class DATASET:
         stdMeans = np.zeros(num_steps)
 
         outlier = 0
+        if sel is None:
+            sel = np.full(self.N, True)
 
         if outlierRejection:
+            index = np.arange(self.N)
+            outliers = np.array([], dtype="int")
             for i, step in enumerate(unique_steps):
-                step_data = data[steps == step]
+                stepSel = (steps == step) * sel
+                step_data = data[stepSel]
 
                 # Calculate interquartile range
                 q1, q3 = np.percentile(step_data, [25, 75])
@@ -152,9 +217,9 @@ class DATASET:
                 upper_bound = q3 + 1.5 * iqr
 
                 # Filter out outliers
-                filtered_data = step_data[
-                    (step_data >= lower_bound) & (step_data <= upper_bound)
-                ]
+                keepSel = (step_data >= lower_bound) & (step_data <= upper_bound)
+                filtered_data = step_data[keepSel]
+                outliers = np.append(outliers, index[steps == step][~keepSel])
                 outlier += len(step_data) - len(filtered_data)
 
                 # Calculate statistics for the filtered data
@@ -162,20 +227,35 @@ class DATASET:
                 stds[i] = np.std(filtered_data)
                 stdMeans[i] = np.std(filtered_data) / np.sqrt(len(filtered_data))
             print(f"{outlier} outliers removed from the data.")
-
+            if returnOutliers:
+                return averages, stds, stdMeans, outliers
+            else:
+                return averages, stds, stdMeans
         else:
             for i, step in enumerate(unique_steps):
-                step_data = data[steps == step]
+                stepSel = (steps == step) * sel
+                step_data = data[stepSel]
 
                 # Calculate statistics for the data
                 averages[i] = np.mean(step_data)
                 stds[i] = np.std(step_data)
                 stdMeans[i] = np.std(step_data) / np.sqrt(len(step_data))
 
-        return averages, stds, stdMeans
+            return averages, stds, stdMeans
 
     # Visualization functions --------------------------------------------------
     # --------------------------------------------------------------------------
+    def blankFigure(self):
+        fig = plt.figure(figsize=(4, 3), dpi=300)
+        ax = fig.add_subplot()
+        ax.dataset_text = ax.text(
+            0.01,
+            0.95,
+            "{}, Dataset: {}".format(self.experiment, self.number),
+            transform=ax.transAxes,
+        )
+        return fig, ax
+
     def plotRawByStep(self, pv=None, scalar=None):
         if pv is not None:
             l = self.getListForPV(pv)
@@ -184,22 +264,15 @@ class DATASET:
             data = scalar
         else:
             return None
-        fig = plt.figure(figsize=(4, 3), dpi=300)
-        ax = fig.add_subplot()
+        fig, ax = self.blankFigure()
         ax.plot(self.x, data, ".", markersize=3)
         ax.set_xlabel(self.params["scanPVs"])
         if pv is not None:
             ax.set_ylabel(pv)
-        ax.text(
-            0.01,
-            0.95,
-            "{}, Dataset: {}".format(self.experiment, self.number),
-            transform=ax.transAxes,
-        )
         return fig, ax
 
-    def plotScalarByStep(self, pv=None, scalar=None, outlierRejection=False):
-        x = self.scan_vals
+    def plotScalarByStep(self, pv=None, scalar=None, outlierRejection=False, sel=None):
+        x = self.x_steps
         if pv is not None:
             l = self.getListForPV(pv)
             data = self.getScalar(l, pv)
@@ -207,20 +280,123 @@ class DATASET:
             data = scalar
         else:
             return None
-        y, y_stdy, y_stdMean = self.averageByStep(data, outlierRejection)
-        fig = plt.figure(figsize=(4, 3), dpi=300)
-        ax = fig.add_subplot()
+        y, y_stdy, y_stdMean = self.averageByStep(
+            data, outlierRejection=outlierRejection, sel=sel
+        )
+        fig, ax = self.blankFigure()
         ax.errorbar(x, y, yerr=y_stdy, fmt=".", markersize=3)
         ax.set_xlabel(self.params["scanPVs"])
         if pv is not None:
             ax.set_ylabel(pv)
-        ax.text(
-            0.01,
-            0.95,
-            "{}, Dataset: {}".format(self.experiment, self.number),
-            transform=ax.transAxes,
-        )
         return fig, ax
+
+    def plotCorrelation(self, pvs=None, scalars=None, fit=False, sel=None):
+        if pvs is not None and len(pvs) == 2:
+            l = self.getListForPV(pvs[0])
+            x_data = self.getScalar(l, pvs[0])
+            l = self.getListForPV(pvs[1])
+            y_data = self.getScalar(l, pvs[1])
+        elif scalars is not None and len(scalars) == 2:
+            x_data = scalars[0]
+            y_data = scalars[1]
+        if sel is None:
+            N = len(x_data)
+            sel = np.full(N, True)
+        corrcoef = np.corrcoef(x_data[sel], y_data[sel])
+        fig, ax = self.blankFigure()
+        ax.plot(x_data[sel], y_data[sel], ".", markersize=2)
+        if pvs is not None:
+            ax.set_xlabel(pvs[0])
+            ax.set_ylabel(pvs[1])
+        ax.text(
+            0.99,
+            0.95,
+            "Correlation coefficient {:0.3f}".format(corrcoef[0, 1]),
+            transform=ax.transAxes,
+            ha="right",
+        )
+        if fit:
+            z = np.polyfit(x_data[sel], y_data[sel], 1)
+            p = np.poly1d(z)
+            x = [np.min(x_data[sel]), np.max(x_data[sel])]
+            ax.plot(x, p(x), c="tab:blue")
+            ax.text(
+                0.99,
+                0.05,
+                r"Fit: $y=$"
+                + "{:0.3e}".format(z[0])
+                + r"$x+$"
+                + "{:0.3e}".format(z[1]),
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+            )
+            return fig, ax, z
+        return fig, ax
+
+    def correlationGrid(self, pvs=[], scalars=[]):
+        N = len(pvs) + len(scalars)
+        data = np.zeros((N, self.N))
+        for i in range(len(pvs)):
+            l = self.getListForPV(pvs[i])
+            data[i] = self.getScalar(l, pvs[i])
+        for i in range(len(pvs), N):
+            data[i] = scalars[i - len(pvs)]
+        cor = np.corrcoef(data)
+        fig = plt.figure(figsize=(1.2 * N, 1.2 * N), dpi=150)
+        gs = gridspec.GridSpec(N, N, wspace=0, hspace=0)
+        axa = {}
+
+        colors = plt.cm.Spectral(np.linspace(0, 1, 101))
+        for i in range(N):
+            for j in range(i, N):
+                ax_name = "{:02d}{:02d}".format(i, j)
+                # Below the top row and right of the forst plot should share both axes with previous plot
+                if i > 0 and j > i:
+                    ax = axa[ax_name] = fig.add_subplot(
+                        gs[i, j],
+                        sharex=axa["{:02d}{:02d}".format(0, j)],
+                        sharey=axa["{:02d}{:02d}".format(i, i)],
+                    )
+                    plt.setp(ax.get_xticklabels(), visible=False)
+                    plt.setp(ax.get_yticklabels(), visible=False)
+                # Plots in the top row should only share y
+                elif i == 0 and j > i:
+                    ax = axa[ax_name] = fig.add_subplot(
+                        gs[i, j], sharey=axa["{:02d}{:02d}".format(i, i)]
+                    )
+                    plt.setp(ax.get_yticklabels(), visible=False)
+                # Plots in the front of each row should only share x
+                elif j == i and i != 0:
+                    ax = axa[ax_name] = fig.add_subplot(
+                        gs[i, j], sharex=axa["{:02d}{:02d}".format(0, j)]
+                    )
+                else:
+                    ax = axa[ax_name] = fig.add_subplot(gs[i, j])
+
+                # Do the actual plotting
+                if i == 0:
+                    ax.set_title(pvs[j], fontsize=6)
+                if j == N - 1:
+                    ax.set_ylabel(pvs[i], fontsize=6)
+                    ax.yaxis.set_label_position("right")
+                if np.isnan(cor[i, j]):
+                    continue
+                c = colors[int(50 * (cor[i, j] + 1))]
+                ax.plot(data[j, :], data[i, :], ".", markersize=2, c=c)
+                ax.annotate(
+                    r"Corr={:0.3f}".format(cor[i, j]),
+                    xy=(0, 1),
+                    xytext=(3, -3),
+                    xycoords="axes fraction",
+                    textcoords="offset points",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=6,
+                )
+        fig.suptitle("{}, Dataset: {}".format(self.experiment, self.number))
+        return fig, axa
 
     def outlierComparisonPlot(self, pv=None, scalar=None):
         x = self.scan_vals
@@ -235,8 +411,7 @@ class DATASET:
         y_out, y_stdy_out, y_stdMean_out = self.averageByStep(
             data, outlierRejection=True
         )
-        fig = plt.figure(figsize=(4, 3), dpi=300)
-        ax = fig.add_subplot()
+        fig, ax = self.blankFigure()
         ax.errorbar(x, y, yerr=y_stdy, fmt=".", markersize=3, label="Raw data")
         ax.errorbar(
             x, y_out, yerr=y_stdy_out, fmt=".", markersize=3, label="Outliers removed"
@@ -244,12 +419,6 @@ class DATASET:
         ax.set_xlabel(self.params["scanPVs"])
         if pv is not None:
             ax.set_ylabel(pv)
-        ax.text(
-            0.01,
-            0.95,
-            "{}, Dataset: {}".format(self.experiment, self.number),
-            transform=ax.transAxes,
-        )
         ax.legend()
         return fig, ax
 

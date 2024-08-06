@@ -86,6 +86,27 @@ def fw_e2(
     return width, height, start, end
 
 
+def fit_gaussian(x, y, p0=(0.0, 1.0, 1.0, 0.0), sigma=None, maxfev=1000):
+    """Fits a Gaussian to a set of data.
+
+    Args:
+        x: Array representing the x axis (time, wavelength, etc.) of the signal.
+        y: The representing the signal with the peak.
+        p0: Initial guess for the fit (x_0, I_0, sigma, y_0).
+        sigma: Error of each point.
+
+    Returns:
+        f: Function that was fit to the signal, call as f(x, *popt).
+        popt: Fit parameters (x_0, I_0, sigma, y_0).
+    """
+
+    def fg(x, x_0, I_0, sigma, y_0):
+        return I_0 * np.exp(-0.5 * ((x - x_0) / sigma) ** 2) + y_0
+
+    px, pcov = optimize.curve_fit(fg, x, y, p0=p0, sigma=sigma, maxfev=maxfev)
+    return fg, px
+
+
 def fit_elliptical_gaussian(image, p0=(1500.0, 1500.0, 1.0, 2000.0, 2000.0, 0.0)):
     """Fits an elliptical Gaussian to an image like object.
 
@@ -180,3 +201,9 @@ def find_roots(x, y):
         y2 = y[ind]
         roots[i] = -y1 * ((x2 - x1) / (y2 - y1)) + x1
     return roots
+
+
+def moving_average(a, n=3):
+    ret = np.cumsum(a, dtype=float)
+    ret[n:] = ret[n:] - ret[:-n]
+    return ret[n - 1 :] / n

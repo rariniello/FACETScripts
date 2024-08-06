@@ -19,8 +19,6 @@ def EFieldFromImage(inputIM, size, cal):
         XD: Domain size of the grid, to feed into the simulation grid.
         NxD: The size of the transverse grid, to feed into the simulation grid.
     """
-
-    size = 300
     shape = np.shape(inputIM)
     image_in = inputIM[
         int(0.5 * shape[0] - size) : int(0.5 * shape[0] + size),

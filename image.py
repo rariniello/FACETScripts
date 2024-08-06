@@ -10,8 +10,9 @@ import matplotlib.transforms as mtransforms
 from scipy.optimize import curve_fit
 import scipy.io
 import os
-import load
 
+import load
+import analysis as an
 
 cal = {}
 
@@ -26,27 +27,28 @@ def set_calibration(cam_name: str, calibration: float):
     cal[str(cam_name)] = calibration
 
 
-def orientImage(data, XOrient, YOrient):
+def orientImage(data, XOrient, YOrient, isRotated=None):
     if XOrient == "Positive" and YOrient == "Positive":
-        return data
+        newData = data
     elif XOrient == "Negative" and YOrient == "Negative":
-        return np.rot90(data, k=2)
+        newData = np.rot90(data, k=2)
     elif XOrient == "Negative" and YOrient == "Positive":
-        return np.flip(data, axis=1)
+        newData = np.flip(data, axis=1)
     elif XOrient == "Positive" and YOrient == "Negative":
-        return np.flip(data, axis=0)
+        newData = np.flip(data, axis=0)
     else:
         raise RuntimeError("Image orientations does not match expected values")
 
+    if isRotated == 1:
+        newData = np.transpose(newData)
+    return newData
 
-def specialFlips(camera, data):
-    # I hate everything about this...
-    if (
-        camera == "LFOV"
-        or camera == "GAMMA1"
-        or camera == "CHER"
-        or camera == "EDC_SCREEN"
-    ):
+
+def specialFlips(camera, data, isRotated=None):
+    if isRotated is not None:
+        return data
+    # Legacy for old datasets
+    if camera == "LFOV" or camera == "GAMMA1" or camera == "EDC_SCREEN":
         # Rotate clockwise
         # data = np.rot90(data, k=1, axes=(1, 0))
         data = np.transpose(data)
@@ -76,6 +78,7 @@ class IMAGE:
         self.x = self.cal * self.xp
         self.y = self.cal * self.yp
         self.center = None
+        self.cropBox = None
         self.check_image()
 
     def load_image(self) -> object:
@@ -149,6 +152,7 @@ class IMAGE:
         self.x = self.cal * self.xp
         self.y = self.cal * self.yp
         self.center = None
+        self.cropBox = box
 
     def center_image(self, strategy: str, o: int, **kwargs):
         """Center the image by non-uniformaly padding it. Meta will no longer match class parameters.
@@ -195,6 +199,7 @@ class IMAGE:
         f=None,
         p0: tuple = None,
         center: np.ndarray = None,
+        maxfev=1000,
     ):
         """Calculate the pixel location of the center of the image.
 
@@ -205,6 +210,7 @@ class IMAGE:
                 'mask' - a mask is formed from all pixels with values greather than a threshold.
                     The image center is the centroid of the mask.
                 'fit' - fit a function to the image to find the center.
+                'projFit' - Project then fit a Guassian.
                 'external' - pass in the location of the mask center.
             size: When strategy='max', size of the median filter
             threshold: When strategy='mask', threshold is used to create the mask.
@@ -226,6 +232,8 @@ class IMAGE:
             self.center = np.array([self.fit[0], self.fit[1]])
         if strategy == "external":
             self.center = center
+        if strategy == "projFit":
+            self.center = self.center_projFit(maxfev=maxfev)
 
     def center_cm(self):
         """Calculate the center of mass of the image."""
@@ -251,6 +259,17 @@ class IMAGE:
         ydata = Z.ravel()
         popt, pcov = curve_fit(f, xdata, ydata, p0=p0)
         return popt
+
+    def center_projFit(self, maxfev):
+        xProj = np.sum(self.data, axis=0)
+        yProj = np.sum(self.data, axis=1)
+        A0x = np.max(xProj)
+        A0y = np.max(yProj)
+        x0 = self.xp[np.argmax(xProj)]
+        y0 = self.yp[np.argmax(yProj)]
+        fg, fitx = an.fit_gaussian(self.xp, xProj, (x0, A0x, 50, 0.0), maxfev=maxfev)
+        fg, fity = an.fit_gaussian(self.yp, yProj, (y0, A0y, 50, 0.0), maxfev=maxfev)
+        return np.array([fitx[0], fity[0]])
 
     def calculate_energy(self):
         """Calculate the total sum of all the pixels."""
@@ -292,9 +311,9 @@ class IMAGE:
     def get_ext(self, cal=True):
         """Helper function to get the extent for imshow."""
         if cal:
-            ext = self.cal * np.array([-0.5, self.width + 0.5, self.height + 0.5, -0.5])
+            ext = self.cal * np.array([-0.5, self.width - 0.5, self.height - 0.5, -0.5])
         else:
-            ext = np.array([-0.5, self.width + 0.5, self.height + 0.5, -0.5])
+            ext = np.array([-0.5, self.width - 0.5, self.height - 0.5, -0.5])
         return ext
 
     def create_fig_ax(self, cal=True):
@@ -519,8 +538,12 @@ class DAQ(IMAGE):
     def orientImage(self, data):
         XOrient = self.meta["X_ORIENT"]
         YOrient = self.meta["Y_ORIENT"]
-        data = orientImage(data, XOrient, YOrient)
-        data = specialFlips(self.camera, data)
+        if "IS_ROTATED" in self.meta:
+            isRotated = self.meta["IS_ROTATED"]
+        else:
+            isRotated = None
+        data = orientImage(data, XOrient, YOrient, isRotated)
+        data = specialFlips(self.camera, data, isRotated)
         return Image.fromarray(data)
 
     def plot_dataset_text(self, ax):
@@ -553,6 +576,9 @@ class DAQ(IMAGE):
         s = mpl.rcParams["xtick.labelsize"]
         sx = self.meta["MinX_RBV"]
         sy = self.meta["MinY_RBV"]
+        if self.cropBox is not None:
+            sx += self.cropBox[0]
+            sy += self.cropBox[1]
         exp = self.meta["AcquireTime_RBV"]
         gain = self.meta["Gain_RBV"]
         metadataText = ax.annotate(
@@ -584,3 +610,22 @@ class DAQ(IMAGE):
         #     size=s,
         #     transform=ax.transAxes,
         # )
+
+
+class HDF5_DAQ(DAQ):
+    def load_image(self):
+        """Load an image from a given data set.
+
+        Returns
+        -------
+        image : obj
+            Pillow image object from the hdf5.
+        """
+        self.path = os.path.join(self.dataset.datasetPath, "images", self.camera)
+        name = os.path.join(self.path, self.filename)
+        f = h5py.File(name, "r")
+        data = f["entry/data/data"][self.step - 1, self.ind]
+        image = Image.fromarray(data)
+        data = np.array(image, dtype="float")
+        image = self.orientImage(data)
+        return image

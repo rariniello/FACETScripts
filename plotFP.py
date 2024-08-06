@@ -22,8 +22,15 @@ def fourierTransformField(E: np.ndarray) -> np.ndarray:
 
 
 def plotFieldAtInd(path, ind):
-    x, y, dx, dy, fx, fy = fp.load.loadGridAtPlane(path, ind=ind)
+    attrs, data = fp.load.loadGridAtPlane(path, ind=ind)
+    x = data["x"]["x"]
+    y = data["y"]["y"]
+    fx = data["x"]["fx"]
+    fy = data["y"]["fy"]
     field = fp.load.loadFieldAtPlane(path, ind=ind)
+    params = fp.load.loadSimulation(path)
+    if params["cylSymmetry"]:
+        raise NotImplementedError("Resampling to 2D not implemented.")
     plotField(x, y, fx, fy, field)
 
 
@@ -53,8 +60,8 @@ def plotField(x, y, fx, fy, field):
 
     ax = fig.add_subplot(233)
     im = ax.imshow(np.rot90(abs(e) ** 2), extent=extf)
-    ax.set_xlabel(r"$f_x$ ($\mathrm{mm^{-2}}$)")
-    ax.set_ylabel(r"$f_y$ ($\mathrm{mm^{-2}}$)")
+    ax.set_xlabel(r"$f_x$ ($\mathrm{1/mm}$)")
+    ax.set_ylabel(r"$f_y$ ($\mathrm{1/mm}$)")
     cb = fig.colorbar(im)
     cb.set_label(r"Intensity (arb. units)")
 
@@ -73,9 +80,9 @@ def plotField(x, y, fx, fy, field):
     ax.legend(loc=1, frameon=False, fontsize=6)
 
     ax = fig.add_subplot(236)
-    ax.plot(x * 1e3, abs(e[:, int(Ny / 2)]) ** 2, label=r"$x$ lineout")
-    ax.plot(y * 1e3, abs(e[int(Nx / 2), :]) ** 2, label=r"$y$ lineout")
-    ax.set_xlabel(r"$f_x$ or $f_y$ ($\mathrm{mm^{-2}}$)")
+    ax.plot(fx * 1e-3, abs(e[:, int(Ny / 2)]) ** 2, label=r"$x$ lineout")
+    ax.plot(fy * 1e-3, abs(e[int(Nx / 2), :]) ** 2, label=r"$y$ lineout")
+    ax.set_xlabel(r"$f_x$ or $f_y$ ($\mathrm{1/mm}$)")
     ax.set_ylabel(r"Intensity (arb. units)")
     ax.legend(loc=1, frameon=False, fontsize=6)
 

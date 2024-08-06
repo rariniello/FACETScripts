@@ -133,3 +133,8 @@ def getExternalDataPath() -> str:
         path: The path to the folder where Elog images are downloaded.
     """
     return __ExternalDataPath
+
+
+def srv20_dataset(number):
+    """Load the dataset from the number on the controls network."""
+    raise NotImplementedError
