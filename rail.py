@@ -112,7 +112,7 @@ def calculate_scale_sim(z, J, ds, maxCounts, sel=None):
     simN = np.sum(J) * dz * 1e3
     y, y_stdy, y_stdMean = ds.averageByStep(maxCounts, sel=sel)
     dz = ds.scan_vals[1] - ds.scan_vals[0]
-    mesN = np.sum(y) * dz
+    mesN = np.nansum(y) * dz
     scale = mesN / simN
     return scale
 
@@ -202,7 +202,7 @@ def get_2D_bessel_fit(ds, centers, roi=200, maxfev=1000):
     return fits
 
 
-def fit_1D_bessel(image, center, roi, R_b=60e-3):
+def fit_1D_bessel(image, center, roi, R_b=60e-3, maxfev=10000):
     cX = int(round(center[0]))
     cY = int(round(center[1]))
     x = image.x[cX - roi : cX + roi] - center[0] * image.cal
@@ -211,9 +211,9 @@ def fit_1D_bessel(image, center, roi, R_b=60e-3):
     ydata = image_data[:, roi]
     kr0 = 2.4048 / R_b
     A0 = np.max(xdata)
-    poptx, pcov = curve_fit(fbsl, x, xdata, p0=(kr0, A0, 0.0), maxfev=10000)
+    poptx, pcov = curve_fit(fbsl, x, xdata, p0=(kr0, A0, 0.0), maxfev=maxfev)
     A0 = np.max(ydata)
-    popty, pcov = curve_fit(fbsl, x, ydata, p0=(kr0, A0, 0.0), maxfev=10000)
+    popty, pcov = curve_fit(fbsl, x, ydata, p0=(kr0, A0, 0.0), maxfev=maxfev)
     return poptx, popty
 
 
@@ -290,7 +290,7 @@ def plot_intensity_vs_simulation(fluence, Jxz, ext, ext_sim, scale, ylim=[-0.5, 
         return im
 
     vmin = 0
-    vmax = np.max(fluence)
+    vmax = np.nanmax(fluence)
     cmap = plot.cmap_BuW
 
     ax00 = fig.add_subplot(gs[0, 0])

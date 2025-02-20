@@ -107,7 +107,10 @@ def get_spec_matrix(spec, start, end, gb):
     K_Q1D = spec["Q1D"]["B"] * e / (gb * me * c)
     K_Q2D = spec["Q2D"]["B"] * e / (gb * me * c)
 
-    s_start = spec[start]
+    if isinstance(start, str):
+        s_start = spec[start]
+    else:
+        s_start = start
     s_end = spec[end]
     l_D0 = (spec["Q0D"]["s"] - 0.5 * spec["Q0D"]["l"]) - s_start
     l_D1 = (spec["Q1D"]["s"] - 0.5 * spec["Q1D"]["l"]) - (

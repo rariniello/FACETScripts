@@ -80,6 +80,28 @@ cmap_W_Plasma = mpl.colors.ListedColormap(
     color_list, name="w_plasma", N=color_list.shape[0]
 )
 
+####################################################################
+# WW_plasma
+####################################################################
+cmap = mpl.cm.get_cmap("plasma")
+# cmap = plt.get_cmap('cividis')
+color_list = cmap(np.linspace(0, 1, 1024))
+
+K = 256
+L = 6
+white = np.ones((L, 4))
+begin = np.zeros((K, 4))
+begin[:, 0] = np.linspace(1, color_list[0, 0], K)
+begin[:, 1] = np.linspace(1, color_list[0, 1], K)
+begin[:, 2] = np.linspace(1, color_list[0, 2], K)
+begin[:, 3] = 1.0
+color_list = np.vstack((white, begin, color_list))
+
+# test = colors.LinearSegmentedColormap.from_list("test", color_list)
+cmap_WW_Plasma = mpl.colors.ListedColormap(
+    color_list, name="w_plasma", N=color_list.shape[0]
+)
+
 RdBu = mpl.cm.get_cmap("RdBu")
 cl = np.zeros((11, 3))
 for i in range(11):

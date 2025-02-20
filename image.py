@@ -452,6 +452,7 @@ class Elog(IMAGE):
     def __init__(self, camera, date, timestamp):
         self.date = date
         self.timestamp = timestamp
+        self._loaded = False
         super().__init__(camera)
 
     def load_image(self):
@@ -462,6 +463,8 @@ class Elog(IMAGE):
         image : obj
             Pillow image object for the tiff.
         """
+        if self._loaded:
+            return
         self.path = load.getExternalDataPath()
         self.filename = "ProfMon-CAMR_{!s}-{!s}-{!s}.mat".format(
             self.camera, self.date, self.timestamp
@@ -474,6 +477,7 @@ class Elog(IMAGE):
             self.mat = None
             self.h5 = h5py.File(name, "r")
             image = Image.fromarray(np.transpose(np.array(self.h5["data"]["img"])))
+        self.loaded = True
         return image
 
     def get_image_meta(self):
@@ -484,6 +488,7 @@ class Elog(IMAGE):
         meta : dict
             The meta data dictionary contained in the tiff image.
         """
+        self.load_image()
         # You can see the name of each field in the mat at mat['data'].dtype.names
         meta = {}
         if self.mat is not None:

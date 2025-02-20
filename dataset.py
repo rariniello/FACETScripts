@@ -219,7 +219,7 @@ class DATASET:
                 # Filter out outliers
                 keepSel = (step_data >= lower_bound) & (step_data <= upper_bound)
                 filtered_data = step_data[keepSel]
-                outliers = np.append(outliers, index[steps == step][~keepSel])
+                outliers = np.append(outliers, index[stepSel][~keepSel])
                 outlier += len(step_data) - len(filtered_data)
 
                 # Calculate statistics for the filtered data
